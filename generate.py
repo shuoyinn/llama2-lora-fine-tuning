@@ -24,7 +24,8 @@ except:  # noqa: E722
 def main(
     load_8bit: bool = False,
     base_model: str = "",
-    lora_weights: str = "tloen/alpaca-lora-7b",
+    # lora_weights: str = "tloen/alpaca-lora-7b",
+    lora_weights: str = "", # Shuo Yin改，为了对比未被我 finetuing 的 base 模型
     prompt_template: str = ""
 ):
     base_model = base_model or os.environ.get("BASE_MODEL", "")
@@ -37,15 +38,18 @@ def main(
     if device == "cuda":
         model = LlamaForCausalLM.from_pretrained(
             base_model,
-            load_in_8bit=load_8bit,
+            #load_in_8bit=load_8bit,
+            load_in_4bit=True,
             torch_dtype=torch.float16,
             device_map="auto",
-        )
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            torch_dtype=torch.float16,
-        )
+        ) 
+
+        if lora_weights: # Shuo Yin加的，为了对比我 finetuing 之前的 base 模型 
+            model = PeftModel.from_pretrained(
+                model,
+                lora_weights,
+                torch_dtype=torch.float16,
+            )
     elif device == "mps":
         model = LlamaForCausalLM.from_pretrained(
             base_model,
@@ -62,11 +66,12 @@ def main(
         model = LlamaForCausalLM.from_pretrained(
             base_model, device_map={"": device}, low_cpu_mem_usage=True
         )
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            device_map={"": device},
-        )
+        if lora_weights: # Shuo Yin加的，为了对比我 finetuing 之前的 base 模型 
+            model = PeftModel.from_pretrained(
+                model,
+                lora_weights,
+                device_map={"": device},
+            )
 
     # unwind broken decapoda-research config
     model.config.pad_token_id = tokenizer.pad_token_id = 0  # unk
@@ -101,14 +106,6 @@ def main(
             num_beams=num_beams,
             **kwargs,
         )
-
-        generate_params = {
-            "input_ids": input_ids,
-            "generation_config": generation_config,
-            "return_dict_in_generate": True,
-            "output_scores": True,
-            "max_new_tokens": max_new_tokens,
-        }
 
         with torch.no_grad():
             generation_output = model.generate(
