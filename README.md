@@ -15,6 +15,8 @@ LLaMA2模型的许可证发生了变化，已允许商用，模型推出时，LL
 
 100多M的语料，在两块P100（16G）上微调一轮需要120小时。所以建议使用V100、4090等推理卡微调。
 
+> Shuo Yin 的卡是 2 块 3090 (24G)，FP 16 速度是 P100 的 10 倍多，所以 1 epoch 约为 12 h，3 epoch 36 h，增大 batch size 一天内能微调完成。
+
 ## 2、微调过程
 
 ### 2.1 下载代码
@@ -35,6 +37,8 @@ export GIT_CURL_VERBOSE=1
 pip install -r requirements.txt -i https://pypi.mirrors.ustc.edu.cn/simple --trusted-host=pypi.mirrors.ustc.edu.cn
 # 问题比较多的是bitsandbytes，pip install后用以下命令验证
 python -m bitsandbytes
+
+# Shuo Yin：torch 版本和 cuda 版本（这里是 cu 118）没有适 3090 driver 的 nvidia-smi 显示的 cuda 版本改变而改变，即使后者是 cu 114 也没问题。
 ```
 
 ### 2.3 下载Llama2-7b原始模型
@@ -43,11 +47,15 @@ python -m bitsandbytes
 # 用本项目开发的下载器下载模型，可以断点续传和重连
 python model_download.py --repo_id NousResearch/Llama-2-7b-hf
 # 下载后的模型在 ./models\NousResearch\Llama-2-7b-hf 下
+
+# Shuo Yin：模型下载可以从 huggingface hub 里通过 git 进行
 ```
 
 ### 2.4 语料准备
 
 语料采用了alpaca格式（huggingface.co中alpaca语料很多，可自行整理），个性化修改后，命名为：ft_datasets/alpaca_data.json
+
+Shuo Yin：我使用了 trans_chinese_alpaca_data.json 
 
 ### 2.5 微调过程
 
