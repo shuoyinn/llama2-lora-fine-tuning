@@ -1,86 +1,321 @@
-# 用Lora和deepspeed微调LLaMA2-Chat
+# LLaMA2中文微调
 
-在两块P100（16G）上微调Llama-2-7b-chat模型。
+LLaMA2模型的许可证发生了变化，已允许商用，模型推出时，LLaMA2-Chat也同时推出，本人在16G推理卡上实践了微调Llama-2-7b-chat（ https://zhuanlan.zhihu.com/p/645152512 ，代码在 https://github.com/git-cloner/llama2-lora-fine-tuning ），但即使扩充了中文词表，推理效果依然不佳，回答主要以英文为主。
 
-数据源采用了alpaca格式，由train和validation两个数据源组成。
+官方在LLaMA2模型发布时，就已开源了官方微调程序，叫做LLaMA伴侣（ https://github.com/facebookresearch/llama-recipes ），支持全量、Lora等方式微调，相对来说兼容性优于第三方的程序。
 
-## 1、显卡要求
+本文是在llama-recipes的基础上，修改适配显卡资源，基于Lora对LLaMA2-7b原始模型进行微调实践，结果推理效果尚可，本项目也提供了测试过程和流式接口。
 
-16G显存及以上（P100或T4及以上），一块或多块。
+- LLaMA2中文微调的效果可在Aiit-Chat查看，链接地址为： https://gitclone.com/aiit/chat/ 。
 
-## 2、Clone源码
+
+## 1、推理卡要求
+
+16G及以上，最好有两块以上。
+
+100多M的语料，在两块P100（16G）上微调一轮需要120小时。所以建议使用V100、4090等推理卡微调。
+
+## 2、微调过程
+
+### 2.1 下载代码
 
 ```bash
-git clone https://github.com/git-cloner/llama2-lora-fine-tuning
-cd llama2-lora-fine-tuning
+git clone https://github.com/git-cloner/Llama2-chinese
+cd Llama2-chinese
 ```
 
-## 3、安装依赖环境
+### 2.2 安装虚拟环境
 
 ```bash
-# 创建虚拟环境
-conda create -n llama2 python=3.9 -y
-conda activate llama2
-# 下载github.com上的依赖资源（需要反复试才能成功，所以单独安装）
+conda create -n llama-recipes python=3.9 -y
+conda activate llama-recipes
+# 因为requirements中有从github中安装的依赖，网络环境不佳，打开这两个参数可以观察进度
 export GIT_TRACE=1
 export GIT_CURL_VERBOSE=1
-pip install git+https://github.com/PanQiWei/AutoGPTQ.git -i https://pypi.mirrors.ustc.edu.cn/simple --trusted-host=pypi.mirrors.ustc.edu.cn
-pip install git+https://github.com/huggingface/peft -i https://pypi.mirrors.ustc.edu.cn/simple
-pip install git+https://github.com/huggingface/transformers -i https://pypi.mirrors.ustc.edu.cn/simple
-# 安装其他依赖包
-pip install -r requirements.txt -i https://pypi.mirrors.ustc.edu.cn/simple
-# 验证bitsandbytes
+pip install -r requirements.txt -i https://pypi.mirrors.ustc.edu.cn/simple --trusted-host=pypi.mirrors.ustc.edu.cn
+# 问题比较多的是bitsandbytes，pip install后用以下命令验证
 python -m bitsandbytes
 ```
 
-## 4、下载原始模型
+### 2.3 下载Llama2-7b原始模型
 
 ```bash
-python model_download.py --repo_id daryl149/llama-2-7b-chat-hf
+# 用本项目开发的下载器下载模型，可以断点续传和重连
+python model_download.py --repo_id NousResearch/Llama-2-7b-hf
+# 下载后的模型在 ./models\NousResearch\Llama-2-7b-hf 下
 ```
 
-## 5、扩充中文词表
+### 2.4 语料准备
+
+语料采用了alpaca格式（huggingface.co中alpaca语料很多，可自行整理），个性化修改后，命名为：ft_datasets/alpaca_data.json
+
+### 2.5 微调过程
+
 
 ```bash
-# 使用了https://github.com/ymcui/Chinese-LLaMA-Alpaca.git的方法扩充中文词表
-# 扩充完的词表在merged_tokenizes_sp（全精度）和merged_tokenizer_hf（半精度）
-# 在微调时，将使用--tokenizer_name ./merged_tokenizer_hf参数
-python merge_tokenizers.py \
-  --llama_tokenizer_dir ./models/daryl149/llama-2-7b-chat-hf \
-  --chinese_sp_model_file ./chinese_sp.model
-```
-
-## 6、微调参数说明
-
-有以下几个参数可以调整：
-
-| 参数                        | 说明                       | 取值                                                         |
-| --------------------------- | -------------------------- | ------------------------------------------------------------ |
-| load_in_bits                | 模型精度                   | 4和8，如果显存不溢出，尽量选高精度8                          |
-| block_size                  | token最大长度              | 首选2048，内存溢出，可选1024、512等                          |
-| per_device_train_batch_size | 训练时每块卡每次装入批量数 | 只要内存不溢出，尽量往大选                                   |
-| per_device_eval_batch_size  | 评估时每块卡每次装入批量数 | 只要内存不溢出，尽量往大选                                   |
-| include                     | 使用的显卡序列             | 如两块：localhost:1,2（特别注意的是，序列与nvidia-smi看到的不一定一样） |
-| num_train_epochs            | 训练轮数                   | 至少3轮                                                      |
-
-## 7、微调
-
-```bash
-chmod +x finetune-lora.sh
-# 微调
-./finetune-lora.sh
-# 微调（后台运行）
-pkill -9 -f finetune-lora
-nohup ./finetune-lora.sh > train.log  2>&1 &
+# kill process force
+pkill -9 -f llama_finetuning
+# train，batch_size_training可按显存大小反复试，尽量把显存占满
+# 本例是用两块P100，分别是第1、2块
+# ！注意如果用两块卡，nproc_per_node是1，不是2
+CUDA_VISIBLE_DEVICES=1,2 nohup torchrun --nnodes 1 --nproc_per_node 1   \
+llama_finetuning.py \
+--use_peft \
+--peft_method lora \
+--model_name ./models/NousResearch/Llama-2-7b-hf \
+--use_fp16 \
+--output_dir output/model \
+--dataset alpaca_dataset \
+--batch_size_training 40 \
+--num_epochs 3 \
+--quantization > train.log  2>&1 &
+# check log
 tail -f train.log
+
+
+
+# Shuo Yin 的微调配置 
+# 9017 两块 3090 (24G) 上跑了三轮 12 h，速度确实是两块 P100 (16G) 一轮 120 h 的 30 倍
+CUDA_VISIBLE_DEVICES=0,1 nohup torchrun --nnodes 1 --nproc_per_node 1 \
+llama_finetuning.py \
+--use_peft \
+--peft_method lora \
+--model_name ./models/Llama-2-7b-hf \
+--use_fp16 \
+--output_dir output/model \
+--dataset alpaca_dataset \
+--batch_size_training 60 \
+--num_epochs 3 \
+--quantization > train.log 2>&1
+
+# 2023-10-20 05:01:53 跑到 2023-10-20 16:46:38 
+
 ```
 
-## 8、测试
+## 3、推理测试
+
+微调一轮后，会产生peft增量模型，在output/model下，用以下命令在客户端交互测试。由于未采用流模式，一次性生成后，才能看到结果，所以速度较慢。
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python generate.py \
-    --base_model './models/daryl149/llama-2-7b-chat-hf' \
-    --lora_weights 'output/checkpoint-2000' \
-    --load_8bit #不加这个参数是用的4bit
+    --base_model './models/NousResearch/Llama-2-7b-hf' \
+    --lora_weights './output/model' \
+    --load_8bit 
+
+# Shuo Yin 的推理命令 
+CUDA_VISIBLE_DEVICES=0,1 python generate.py \
+    --base_model './models/Llama-2-7b-hf' \
+    --lora_weights './output/model' \
+    --load_8bit 
+
+# 对比微调之前的 base 模型
+CUDA_VISIBLE_DEVICES=0,1 python generate.py \
+    --base_model './models/Llama-2-7b-hf' \
+    --load_8bit 
+
+# 构建两个角色之间关于全球变暖的对话。
+# 出自1947年以来印度的所有总理。
 ```
 
+## 4、流式API测试
+
+### 4.1 开启API服务
+
+```bash
+# 可以用4bit或8bit量化方式或半精度装入模型测试
+# --load_4bit  需要约6G显存
+# --load_8bit  需要9G显存
+# 半精度  需要13G显存
+CUDA_VISIBLE_DEVICES=0 nohup python -u api_stream.py \
+--load_4bit > api_stream.log  2>&1 &
+tail -f api_stream.log 
+
+
+CUDA_VISIBLE_DEVICES=0,1 nohup python -u api_stream.py \
+--base_model './models/Llama-2-7b-hf' \
+--load_8bit > api_stream.log  2>&1 &
+```
+
+### 4.2 测试API
+
+```bash
+# 多次发POST请求，直到返回的response中包含[stop]后停止调用
+curl -X POST "http://127.0.0.1:8000/stream" \
+     -H 'Content-Type: application/json' \
+     -d '{"prompt": "你好", "history": []}'
+```
+
+## 5、模型合并
+
+```bash
+python inference/hf-text-generation-inference/merge_lora_weights.py \
+--base_model ./models/NousResearch/Llama-2-7b-hf \
+--peft_model output/model \
+--output_dir output/merged_model_output
+```
+
+## 6、存在问题
+
+- 尽量做全量或半精度微调，Lora的效果一般
+- 本项目中，由于算力限制，max_token_size设置的比较小（256），精度也低（4bit）所以生成的可能不完整
+- 语料不宜过多，但要求质量要高，5万多条（51K）效果好# LLaMA2中文微调
+
+LLaMA2模型的许可证发生了变化，已允许商用，模型推出时，LLaMA2-Chat也同时推出，本人在16G推理卡上实践了微调Llama-2-7b-chat（ https://zhuanlan.zhihu.com/p/645152512 ，代码在 https://github.com/git-cloner/llama2-lora-fine-tuning ），但即使扩充了中文词表，推理效果依然不佳，回答主要以英文为主。
+
+官方在LLaMA2模型发布时，就已开源了官方微调程序，叫做LLaMA伴侣（ https://github.com/facebookresearch/llama-recipes ），支持全量、Lora等方式微调，相对来说兼容性优于第三方的程序。
+
+本文是在llama-recipes的基础上，修改适配显卡资源，基于Lora对LLaMA2-7b原始模型进行微调实践，结果推理效果尚可，本项目也提供了测试过程和流式接口。
+
+- LLaMA2中文微调的效果可在Aiit-Chat查看，链接地址为： https://gitclone.com/aiit/chat/ 。
+
+
+## 1、推理卡要求
+
+16G及以上，最好有两块以上。
+
+100多M的语料，在两块P100（16G）上微调一轮需要120小时。所以建议使用V100、4090等推理卡微调。
+
+## 2、微调过程
+
+### 2.1 下载代码
+
+```bash
+git clone https://github.com/git-cloner/Llama2-chinese
+cd Llama2-chinese
+```
+
+### 2.2 安装虚拟环境
+
+```bash
+conda create -n llama-recipes python=3.9 -y
+conda activate llama-recipes
+# 因为requirements中有从github中安装的依赖，网络环境不佳，打开这两个参数可以观察进度
+export GIT_TRACE=1
+export GIT_CURL_VERBOSE=1
+pip install -r requirements.txt -i https://pypi.mirrors.ustc.edu.cn/simple --trusted-host=pypi.mirrors.ustc.edu.cn
+# 问题比较多的是bitsandbytes，pip install后用以下命令验证
+python -m bitsandbytes
+```
+
+### 2.3 下载Llama2-7b原始模型
+
+```bash
+# 用本项目开发的下载器下载模型，可以断点续传和重连
+python model_download.py --repo_id NousResearch/Llama-2-7b-hf
+# 下载后的模型在 ./models\NousResearch\Llama-2-7b-hf 下
+```
+
+### 2.4 语料准备
+
+语料采用了alpaca格式（huggingface.co中alpaca语料很多，可自行整理），个性化修改后，命名为：ft_datasets/alpaca_data.json
+
+### 2.5 微调过程
+
+
+```bash
+# kill process force
+pkill -9 -f llama_finetuning
+# train，batch_size_training可按显存大小反复试，尽量把显存占满
+# 本例是用两块P100，分别是第1、2块
+# ！注意如果用两块卡，nproc_per_node是1，不是2
+CUDA_VISIBLE_DEVICES=1,2 nohup torchrun --nnodes 1 --nproc_per_node 1   \
+llama_finetuning.py \
+--use_peft \
+--peft_method lora \
+--model_name ./models/NousResearch/Llama-2-7b-hf \
+--use_fp16 \
+--output_dir output/model \
+--dataset alpaca_dataset \
+--batch_size_training 40 \
+--num_epochs 3 \
+--quantization > train.log  2>&1 &
+# check log
+tail -f train.log
+
+
+
+# Shuo Yin 的微调配置 
+# 9017 两块 3090 (24G) 上跑了三轮 12 h，速度确实是两块 P100 (16G) 一轮 120 h 的 30 倍
+CUDA_VISIBLE_DEVICES=0,1 nohup torchrun --nnodes 1 --nproc_per_node 1 \
+llama_finetuning.py \
+--use_peft \
+--peft_method lora \
+--model_name ./models/Llama-2-7b-hf \
+--use_fp16 \
+--output_dir output/model \
+--dataset alpaca_dataset \
+--batch_size_training 60 \
+--num_epochs 3 \
+--quantization > train.log 2>&1
+
+# 2023-10-20 05:01:53 跑到 2023-10-20 16:46:38 
+
+```
+
+## 3、推理测试
+
+微调一轮后，会产生peft增量模型，在output/model下，用以下命令在客户端交互测试。由于未采用流模式，一次性生成后，才能看到结果，所以速度较慢。
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python generate.py \
+    --base_model './models/NousResearch/Llama-2-7b-hf' \
+    --lora_weights './output/model' \
+    --load_8bit 
+
+# Shuo Yin 的推理命令 
+CUDA_VISIBLE_DEVICES=0,1 python generate.py \
+    --base_model './models/Llama-2-7b-hf' \
+    --lora_weights './output/model' \
+    --load_8bit 
+
+# 对比微调之前的 base 模型
+CUDA_VISIBLE_DEVICES=0,1 python generate.py \
+    --base_model './models/Llama-2-7b-hf' \
+    --load_8bit 
+
+# 构建两个角色之间关于全球变暖的对话。
+# 出自1947年以来印度的所有总理。
+```
+
+## 4、流式API测试
+
+### 4.1 开启API服务
+
+```bash
+# 可以用4bit或8bit量化方式或半精度装入模型测试
+# --load_4bit  需要约6G显存
+# --load_8bit  需要9G显存
+# 半精度  需要13G显存
+CUDA_VISIBLE_DEVICES=0 nohup python -u api_stream.py \
+--load_4bit > api_stream.log  2>&1 &
+tail -f api_stream.log 
+
+
+CUDA_VISIBLE_DEVICES=0,1 nohup python -u api_stream.py \
+--base_model './models/Llama-2-7b-hf' \
+--load_8bit > api_stream.log  2>&1 &
+```
+
+### 4.2 测试API
+
+```bash
+# 多次发POST请求，直到返回的response中包含[stop]后停止调用
+curl -X POST "http://127.0.0.1:8000/stream" \
+     -H 'Content-Type: application/json' \
+     -d '{"prompt": "你好", "history": []}'
+```
+
+## 5、模型合并
+
+```bash
+python inference/hf-text-generation-inference/merge_lora_weights.py \
+--base_model ./models/NousResearch/Llama-2-7b-hf \
+--peft_model output/model \
+--output_dir output/merged_model_output
+```
+
+## 6、存在问题
+
+- 尽量做全量或半精度微调，Lora的效果一般
+- 本项目中，由于算力限制，max_token_size设置的比较小（256），精度也低（4bit）所以生成的可能不完整
+- 语料不宜过多，但要求质量要高，5万多条（51K）效果好
